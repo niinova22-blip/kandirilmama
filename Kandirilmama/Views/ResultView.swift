@@ -5,7 +5,34 @@ struct ResultView: View {
 
     let record: ConversationRecord
 
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    @State private var isConfirmingDelete = false
+
     var body: some View {
+        content
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(role: .destructive) {
+                        isConfirmingDelete = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .accessibilityLabel("Görüşmeyi sil")
+                }
+            }
+            .confirmationDialog("Bu görüşme ve transkripti kalıcı olarak silinsin mi?",
+                                isPresented: $isConfirmingDelete,
+                                titleVisibility: .visible) {
+                Button("Sil", role: .destructive) {
+                    modelContext.delete(record)
+                    try? modelContext.save()
+                    dismiss()
+                }
+            }
+    }
+
+    private var content: some View {
         List {
             if let report = record.report {
                 Section {

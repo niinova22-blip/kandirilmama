@@ -55,6 +55,11 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertFalse(item("price-rationale", in: report).isCovered)
     }
 
+    func testBinmekIsNotAPriceWord() {
+        let report = RuleEngine.evaluate(transcript: "Arabaya binecek misin, neden?", scenario: scenario)
+        XCTAssertFalse(item("price-rationale", in: report).isCovered)
+    }
+
     func testPriceWithReasonIsCovered() {
         let report = RuleEngine.evaluate(transcript: "Fiyat neden bu kadar yüksek?", scenario: scenario)
         XCTAssertTrue(item("price-rationale", in: report).isCovered)

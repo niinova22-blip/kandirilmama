@@ -13,6 +13,7 @@ struct RecordingView: View {
     }
 
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @State private var transcriber = LiveTranscriber()
     @State private var phase: Phase = .ready
     @State private var startError: String?
@@ -43,6 +44,12 @@ struct RecordingView: View {
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in
             // Telefon araması vb. kesinti → kaydı güvenle bitir.
             if case .recording(let startedAt) = phase {
+                Task { await finish(startedAt: startedAt) }
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // Arka planda mikrofon erişimi kesilir; o ana kadarki görüşmeyi kaybetmemek için bitir.
+            if newPhase == .background, case .recording(let startedAt) = phase {
                 Task { await finish(startedAt: startedAt) }
             }
         }

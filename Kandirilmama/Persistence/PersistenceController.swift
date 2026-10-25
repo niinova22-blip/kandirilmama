@@ -6,6 +6,18 @@ enum PersistenceController {
     /// - `cloudKitDatabase: .none` → iCloud/CloudKit senkronizasyonu kapalı.
     /// - Klasör iCloud/iTunes yedeklerinden hariç tutulur; transkriptler cihazdan hiç çıkmaz.
     static func makeContainer() throws -> ModelContainer {
+        do {
+            return try openContainer()
+        } catch {
+            // Depo bozulmuşsa her açılışta çökmek yerine yerel kayıtları sıfırla.
+            if let directory = try? storeDirectory() {
+                try? FileManager.default.removeItem(at: directory)
+            }
+            return try openContainer()
+        }
+    }
+
+    private static func openContainer() throws -> ModelContainer {
         let directory = try storeDirectory()
         let configuration = ModelConfiguration(
             "Kandirilmama",

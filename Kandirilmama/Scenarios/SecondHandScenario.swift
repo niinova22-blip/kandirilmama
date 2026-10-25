@@ -34,7 +34,7 @@ extension Scenario {
                 severity: .standard,
                 rules: [
                     // Yalnızca fiyatın söylenmesi yetmez; aynı cümlede gerekçe de geçmeli.
-                    .all(["fiyat", "ucret", "para", "=tl", "lira", "bin"],
+                    .all(["fiyat", "ucret", "para", "=tl", "lira", "=bin"],
                          ["neden", "niye", "nicin", "sebeb", "sebep", "gerekce", "cunku",
                           "piyasa", "deger", "pahali", "ucuz", "emsal"]),
                 ],
