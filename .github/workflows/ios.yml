@@ -1,0 +1,68 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ağ kullanımı denetimi
+        run: bash scripts/check-no-network.sh
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Xcode sürümünü doğrula (FoundationModels için 26+)
+        run: |
+          xcodebuild -version
+          MAJOR=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
+          if [ "$MAJOR" -lt 26 ]; then
+            echo "::error::Xcode 26 veya üstü gerekli (bulunan: $MAJOR)"
+            exit 1
+          fi
+
+      # XcodeGen yalnızca CI aracıdır; uygulamaya hiçbir şey eklemez.
+      - name: Xcode projesini üret
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Birim testleri (simülatör)
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          print(next(d['udid'] for runtime, ds in devices.items() if 'iOS' in runtime for d in ds if d['name'].startswith('iPhone')))
+          ")
+          echo "Simülatör: $UDID"
+          xcodebuild test \
+            -project Kandirilmama.xcodeproj \
+            -scheme Kandirilmama \
+            -destination "id=$UDID" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: İmzasız IPA üret
+        run: |
+          xcodebuild build \
+            -project Kandirilmama.xcodeproj \
+            -scheme Kandirilmama \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Kandirilmama.app Payload/
+          zip -qry Kandirilmama-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kandirilmama-unsigned-ipa
+          path: Kandirilmama-unsigned.ipa
