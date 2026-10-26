@@ -13,12 +13,16 @@ jobs:
       BUNDLE_ID: ${{ vars.BUNDLE_ID }}
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      PROFILE_NAME: Kandirilmama AppStore CI
     steps:
       - uses: actions/checkout@v4
 
       - name: Ayarları denetle
+        env:
+          DIST_CERT_P12: ${{ secrets.DIST_CERT_P12 }}
+          APPSTORE_PROFILE: ${{ secrets.APPSTORE_PROFILE }}
         run: |
-          for name in APPLE_TEAM_ID BUNDLE_ID ASC_KEY_ID ASC_ISSUER_ID; do
+          for name in APPLE_TEAM_ID BUNDLE_ID ASC_KEY_ID ASC_ISSUER_ID DIST_CERT_P12 APPSTORE_PROFILE; do
             if [ -z "${!name}" ]; then
               echo "::error::$name tanımlı değil (README › TestFlight bölümüne bakın)"
               exit 1
@@ -35,16 +39,39 @@ jobs:
           brew install xcodegen
           xcodegen generate
 
-      - name: App Store Connect API anahtarını yaz
+      # Bulut imzalama kullanılmıyor: sertifika adında ASCII dışı karakter (Ö) olduğunda
+      # codesign'ın ürettiği designated requirement sertifikayla eşleşmiyor (ITMS 90035).
+      - name: İmzalama sertifikası ve profili kur
         env:
-          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          DIST_CERT_P12: ${{ secrets.DIST_CERT_P12 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+          APPSTORE_PROFILE: ${{ secrets.APPSTORE_PROFILE }}
         run: |
-          mkdir -p "$RUNNER_TEMP/keys"
-          printf '%s' "$ASC_PRIVATE_KEY" > "$RUNNER_TEMP/keys/AuthKey.p8"
-          echo "ASC_KEY_PATH=$RUNNER_TEMP/keys/AuthKey.p8" >> "$GITHUB_ENV"
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
 
-      # Otomatik imzalama: sertifika ve provisioning profile'ı Apple bulutta
-      # yönetir; makineye .p12 yüklemek gerekmez.
+          printf '%s' "$DIST_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$DIST_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk 'NR==1 {print $2}')
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::İmzalama kimliği bulunamadı"
+            exit 1
+          fi
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+          for dir in "$HOME/Library/MobileDevice/Provisioning Profiles" "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles"; do
+            mkdir -p "$dir"
+            printf '%s' "$APPSTORE_PROFILE" | base64 --decode > "$dir/kandirilmama-appstore.mobileprovision"
+          done
+
       - name: Arşivle
         run: |
           xcodebuild archive \
@@ -53,16 +80,15 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath "$RUNNER_TEMP/Kandirilmama.xcarchive" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$ASC_KEY_PATH" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            CODE_SIGN_STYLE=Automatic \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
             PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
             CURRENT_PROJECT_VERSION="${{ github.run_number }}"
 
-      - name: TestFlight'a yükle
+      - name: IPA üret ve imzayı doğrula
         run: |
           cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -72,7 +98,12 @@ jobs:
             <key>method</key><string>app-store-connect</string>
             <key>destination</key><string>export</string>
             <key>teamID</key><string>$APPLE_TEAM_ID</string>
-            <key>signingStyle</key><string>automatic</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>signingCertificate</key><string>$SIGN_IDENTITY</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>$BUNDLE_ID</key><string>$PROFILE_NAME</string>
+            </dict>
             <key>manageAppVersionAndBuildNumber</key><false/>
           </dict>
           </plist>
@@ -80,35 +111,41 @@ jobs:
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/Kandirilmama.xcarchive" \
             -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
-            -exportPath "$RUNNER_TEMP/export" \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$ASC_KEY_PATH" \
-            -authenticationKeyID "$ASC_KEY_ID" \
-            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+            -exportPath "$RUNNER_TEMP/export"
 
-          # İmza teşhisi: dağıtım sertifikasıyla imzalandığını doğrula.
           cd "$RUNNER_TEMP/export"
-          unzip -q Kandirilmama.ipa -d ipa
+          rm -rf ipa && mkdir ipa && unzip -q Kandirilmama.ipa -d ipa
           APP=ipa/Payload/Kandirilmama.app
-          codesign -dvv "$APP" 2>&1 | grep -E "Authority|Identifier|TeamIdentifier"
-          codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -p - || true
-          echo "--- Designated requirement ---"
-          codesign -d -r- "$APP" 2>&1 || true
-          echo "--- Leaf sertifika ---"
-          mkdir -p certs && (cd certs && codesign -d --extract-certificates "../$APP" >/dev/null 2>&1 || true)
-          openssl x509 -inform DER -in certs/codesign0 -noout -subject -nameopt RFC2253 || true
-          openssl asn1parse -inform DER -in certs/codesign0 | grep -A1 -E "commonName|organizationalUnitName" | head -8 || true
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          if codesign -dvv "$APP" 2>&1 | grep -q "Authority=Apple Development"; then
-            echo "::error::IPA geliştirme sertifikasıyla imzalanmış; dağıtım imzası alınamadı."
-            exit 1
+
+          if ! codesign --verify --deep --strict "$APP" 2>/dev/null; then
+            echo "Designated requirement sertifikayla eşleşmiyor; Team ID tabanlı kuralla yeniden imzalanıyor."
+            codesign -d --entitlements - --xml "$APP" > "$RUNNER_TEMP/entitlements.plist" 2>/dev/null
+            codesign --force --sign "$SIGN_IDENTITY" --keychain "$KEYCHAIN" \
+              --entitlements "$RUNNER_TEMP/entitlements.plist" \
+              --requirements "=designated => anchor apple generic and identifier \"$BUNDLE_ID\" and certificate leaf[subject.OU] = \"$APPLE_TEAM_ID\" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */" \
+              "$APP"
+            rm Kandirilmama.ipa
+            (cd ipa && zip -qry ../Kandirilmama.ipa .)
           fi
 
+          codesign -dvv "$APP" 2>&1 | grep -E "^Authority=|^Identifier="
+          codesign -d -r- "$APP" 2>&1 | grep designated
+          codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -p -
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      - name: TestFlight'a yükle
+        env:
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
           mkdir -p ~/.appstoreconnect/private_keys
-          cp "$ASC_KEY_PATH" ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
-          xcrun altool --upload-app -f Kandirilmama.ipa -t ios \
+          printf '%s' "$ASC_PRIVATE_KEY" > ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          xcrun altool --upload-app -f "$RUNNER_TEMP/export/Kandirilmama.ipa" -t ios \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
 
-      - name: Anahtarı sil
+      - name: Gizli dosyaları temizle
         if: always()
-        run: rm -rf "$RUNNER_TEMP/keys" ~/.appstoreconnect/private_keys
+        run: |
+          rm -rf ~/.appstoreconnect/private_keys
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/kandirilmama-appstore.mobileprovision" \
+                "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/kandirilmama-appstore.mobileprovision"
+          if [ -n "$KEYCHAIN" ]; then security delete-keychain "$KEYCHAIN" || true; fi
