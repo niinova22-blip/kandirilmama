@@ -92,6 +92,12 @@ jobs:
           APP=ipa/Payload/Kandirilmama.app
           codesign -dvv "$APP" 2>&1 | grep -E "Authority|Identifier|TeamIdentifier"
           codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -p - || true
+          echo "--- Designated requirement ---"
+          codesign -d -r- "$APP" 2>&1 || true
+          echo "--- Leaf sertifika ---"
+          mkdir -p certs && (cd certs && codesign -d --extract-certificates "../$APP" >/dev/null 2>&1 || true)
+          openssl x509 -inform DER -in certs/codesign0 -noout -subject -nameopt RFC2253 || true
+          openssl asn1parse -inform DER -in certs/codesign0 | grep -A1 -E "commonName|organizationalUnitName" | head -8 || true
           codesign --verify --deep --strict --verbose=2 "$APP"
           if codesign -dvv "$APP" 2>&1 | grep -q "Authority=Apple Development"; then
             echo "::error::IPA geliştirme sertifikasıyla imzalanmış; dağıtım imzası alınamadı."
