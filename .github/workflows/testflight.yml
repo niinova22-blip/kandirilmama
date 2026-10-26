@@ -70,7 +70,7 @@ jobs:
           <plist version="1.0">
           <dict>
             <key>method</key><string>app-store-connect</string>
-            <key>destination</key><string>upload</string>
+            <key>destination</key><string>export</string>
             <key>teamID</key><string>$APPLE_TEAM_ID</string>
             <key>signingStyle</key><string>automatic</string>
             <key>manageAppVersionAndBuildNumber</key><false/>
@@ -86,6 +86,23 @@ jobs:
             -authenticationKeyID "$ASC_KEY_ID" \
             -authenticationKeyIssuerID "$ASC_ISSUER_ID"
 
+          # İmza teşhisi: dağıtım sertifikasıyla imzalandığını doğrula.
+          cd "$RUNNER_TEMP/export"
+          unzip -q Kandirilmama.ipa -d ipa
+          APP=ipa/Payload/Kandirilmama.app
+          codesign -dvv "$APP" 2>&1 | grep -E "Authority|Identifier|TeamIdentifier"
+          codesign -d --entitlements - --xml "$APP" 2>/dev/null | plutil -p - || true
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          if codesign -dvv "$APP" 2>&1 | grep -q "Authority=Apple Development"; then
+            echo "::error::IPA geliştirme sertifikasıyla imzalanmış; dağıtım imzası alınamadı."
+            exit 1
+          fi
+
+          mkdir -p ~/.appstoreconnect/private_keys
+          cp "$ASC_KEY_PATH" ~/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8
+          xcrun altool --upload-app -f Kandirilmama.ipa -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
       - name: Anahtarı sil
         if: always()
-        run: rm -rf "$RUNNER_TEMP/keys"
+        run: rm -rf "$RUNNER_TEMP/keys" ~/.appstoreconnect/private_keys
